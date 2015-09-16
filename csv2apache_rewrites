@@ -1,0 +1,95 @@
+#!/usr/bin/env ruby
+
+require 'cgi/util'
+
+def usage
+  STDERR.puts <<-END.gsub(/\A    /, '')
+    Usage: #$0 INFILE OUTFILE
+
+    Where INFILE is a TAB separated text file in format:
+    Source URL 1  Destination URL 1
+    Source URL 2  Destination URL 2
+    ...
+  END
+end
+
+# CGI::escape escapes too many characters
+def myescape(string)
+  encoding = string.encoding
+  string.b.gsub(/([^~a-zA-Z0-9_.\-\/\?&=,]| )/) do |m|
+    '%' + m.unpack('H2' * m.bytesize).join('%').downcase
+  end.force_encoding(encoding)
+end
+
+# input array to redirects hash
+# redirects hash looks like (json format):
+# {
+#   "request_uri 1": {
+#     "destination 1": [
+#       "query_string 1",
+#       "query_string 2"
+#     ],
+#     "destination 2": [
+#       "query_string 3"
+#     ]
+#   },
+#   "request_uri 2": {
+#     "destination 3": [
+#       "query_string 4",
+#       "query_string 5",
+#       "query_string 6"
+#     ]
+#   }
+#}
+def inary2rhash(source)
+  h = {}
+  source.each do |line|
+    from, to, = line.split("\t")
+    from = CGI.unescape(from)
+    request_uri, query_string = from.split('?')
+    if request_uri =~ %r{\A(?:(?:https?://)?[^/]+)(/.+)}
+      request_uri = $1
+    end
+    h[request_uri] ||= {}
+    h[request_uri][to] ||= []
+    h[request_uri][to] << query_string
+  end
+  h
+end
+
+# converts redirects hash to mod_rewrite directives
+def render_rhash(h)
+  s = []
+  h.each do |request_uri, val|
+    val.each do |destination, query_string_ary|
+      t = []
+      query_string_ary.each do |query_string|
+        t << %Q{RewriteCond expr "%{QUERY_STRING} -strcmatch '#{query_string}'"}
+        a = myescape(query_string)
+        if query_string != a
+          t << %Q{RewriteCond expr "%{QUERY_STRING} -strcmatch '#{a}'"}
+        end
+      end
+      s << t.join(" [OR]\n")
+      if destination[0] != '/' && destination !~ %r{\Ahttps?://}
+        destination = "http://#{destination}"
+      end
+      s << %Q{RewriteRule "#{request_uri}" #{destination} [R=301,L,QSD,NC]}
+      s << ''
+    end
+  end
+  s.join("\n")
+end
+
+if ARGV.size < 2
+  usage
+  exit 1
+else
+  infile, outfile = ARGV
+  source = File.readlines(infile).map(&:chomp)
+  h = inary2rhash(source)
+  s = render_rhash(h)
+  File.open(outfile, 'w') {|f| f << s }
+end
+
+# vim: et ts=2
