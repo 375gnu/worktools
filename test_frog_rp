@@ -1,0 +1,50 @@
+#!/usr/bin/env ruby
+
+require 'minitest/spec'
+require 'minitest/autorun'
+require 'minitest/parallel'
+require 'net/http'
+require 'json'
+
+RFILE='chef/Hosted_Chef/data_bags/redirect/default.json'
+PFILE='chef/Hosted_Chef/data_bags/proxy_locations/default.json'
+
+PROD='https://www.thomascook.com'
+PPT='http://uk.staging.thomascook.io'
+
+class MyTest < MiniTest::Spec
+  private def request(uri, headers={})
+    uri = URI(uri) if uri.kind_of?(String)
+    req = Net::HTTP::Head.new(uri)
+    headers['Host'] ||= host
+    headers.each {|header,value| req[header] = value }
+    Net::HTTP.start(uri.hostname, uri.port,
+                    use_ssl: uri.scheme == 'https') {|http| http.request(req) }
+  end
+  private def host
+    @host ||= ARGV[0] == 'ppt' ? PPT : ARGV[0].nil? ? PROD : ARGV[0]
+  end
+
+  describe 'Static redirects' do
+    JSON.parse(File.read(RFILE))['main']['tcuk'].each do |from,to|
+      it "Redirect #{from} to #{to}" do
+        res = request("#{host}#{from.gsub(' ', '%20')}")
+        res.code.must_match('301')
+        res['Location'].must_match(/#{to}/)
+      end
+    end
+  end
+
+  describe 'Proxified locations' do
+    JSON.parse(File.read(PFILE))['main']['tcuk'].each do |_,val|
+      val['uri_list'].each_key do |from|
+        it from do
+          res = request("#{host}#{from.gsub(' ', '%20')}")
+          res.code.must_match('200')
+        end
+      end
+    end
+  end
+end
+
+# vim: et ts=2
